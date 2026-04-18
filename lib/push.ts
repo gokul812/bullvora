@@ -15,40 +15,69 @@ function ensureVapid() {
   vapidReady = true;
 }
 
-// ─── Upstash Redis — thin REST client, no SDK needed ─────────────────────────
+// ─── GitHub Gist storage — no extra account needed ───────────────────────────
+// Stores a single JSON document in a private gist. Free, uses existing GitHub auth.
 
-const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL || "";
-const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN || "";
+const GIST_ID = (process.env.GITHUB_GIST_ID || "").trim();
+const GITHUB_TOKEN = (process.env.GITHUB_TOKEN || "").trim();
+const GIST_FILENAME = "bullvora-data.json";
 
-async function redis(command: (string | number)[]): Promise<unknown> {
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
-  const res = await fetch(UPSTASH_URL, {
-    method: "POST",
+interface GistData {
+  subscription: webpush.PushSubscription | null;
+  alerts: ServerAlert[];
+  triggered: string[];
+}
+
+async function readGist(): Promise<GistData> {
+  const empty: GistData = { subscription: null, alerts: [], triggered: [] };
+  if (!GIST_ID || !GITHUB_TOKEN) return empty;
+  try {
+    const res = await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+      headers: {
+        Authorization: `token ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github.v3+json",
+      },
+      cache: "no-store",
+    });
+    if (!res.ok) return empty;
+    const data = await res.json();
+    const raw = data.files?.[GIST_FILENAME]?.content;
+    if (!raw) return empty;
+    return { ...empty, ...JSON.parse(raw) };
+  } catch {
+    return empty;
+  }
+}
+
+async function writeGist(data: GistData): Promise<void> {
+  if (!GIST_ID || !GITHUB_TOKEN) return;
+  await fetch(`https://api.github.com/gists/${GIST_ID}`, {
+    method: "PATCH",
     headers: {
-      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      Authorization: `token ${GITHUB_TOKEN}`,
+      Accept: "application/vnd.github.v3+json",
       "Content-Type": "application/json",
     },
-    body: JSON.stringify(command),
-    cache: "no-store",
+    body: JSON.stringify({
+      files: { [GIST_FILENAME]: { content: JSON.stringify(data, null, 2) } },
+    }),
   });
-  const json = await res.json();
-  return json.result ?? null;
 }
 
 // ─── Subscription storage ─────────────────────────────────────────────────────
 
 export async function storeSubscription(sub: webpush.PushSubscription): Promise<void> {
-  await redis(["SET", "bullvora:subscription", JSON.stringify(sub)]);
+  const data = await readGist();
+  await writeGist({ ...data, subscription: sub });
 }
 
 export async function getSubscription(): Promise<webpush.PushSubscription | null> {
-  const raw = await redis(["GET", "bullvora:subscription"]);
-  if (!raw) return null;
-  try { return JSON.parse(raw as string); } catch { return null; }
+  return (await readGist()).subscription;
 }
 
 export async function deleteSubscription(): Promise<void> {
-  await redis(["DEL", "bullvora:subscription"]);
+  const data = await readGist();
+  await writeGist({ ...data, subscription: null });
 }
 
 // ─── Alert storage ────────────────────────────────────────────────────────────
@@ -64,26 +93,32 @@ export interface ServerAlert {
 }
 
 export async function storeAlerts(alerts: ServerAlert[]): Promise<void> {
-  await redis(["SET", "bullvora:alerts", JSON.stringify(alerts)]);
+  const data = await readGist();
+  await writeGist({ ...data, alerts });
 }
 
 export async function getAlerts(): Promise<ServerAlert[]> {
-  const raw = await redis(["GET", "bullvora:alerts"]);
-  if (!raw) return [];
-  try { return JSON.parse(raw as string); } catch { return []; }
+  return (await readGist()).alerts;
 }
 
 export async function markTriggered(id: string): Promise<void> {
-  await redis(["SADD", "bullvora:triggered", id]);
+  const data = await readGist();
+  const triggered = [...new Set([...data.triggered, id])];
+  await writeGist({ ...data, triggered });
 }
 
 export async function getTriggered(): Promise<string[]> {
-  const raw = await redis(["SMEMBERS", "bullvora:triggered"]);
-  return Array.isArray(raw) ? (raw as string[]) : [];
+  return (await readGist()).triggered;
 }
 
-export async function clearTriggered(id: string): Promise<void> {
-  await redis(["SREM", "bullvora:triggered", id]);
+// ─── Read all in one shot (used by cron to avoid multiple round-trips) ─────────
+
+export async function getAllData(): Promise<GistData> {
+  return readGist();
+}
+
+export async function saveAllData(data: GistData): Promise<void> {
+  return writeGist(data);
 }
 
 // ─── Send Web Push ────────────────────────────────────────────────────────────
@@ -108,7 +143,6 @@ export async function sendPushNotification(
     await webpush.sendNotification(subscription, JSON.stringify(payload));
     return true;
   } catch (err: unknown) {
-    // Subscription expired or revoked — clean up
     const e = err as { statusCode?: number };
     if (e?.statusCode === 410 || e?.statusCode === 404) {
       await deleteSubscription();
@@ -118,8 +152,8 @@ export async function sendPushNotification(
   }
 }
 
-// ─── Is Upstash configured? ───────────────────────────────────────────────────
+// ─── Is storage ready? ────────────────────────────────────────────────────────
 
 export function isStorageReady(): boolean {
-  return !!(UPSTASH_URL && UPSTASH_TOKEN);
+  return !!(GIST_ID && GITHUB_TOKEN);
 }

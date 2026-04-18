@@ -1,9 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  getSubscription,
-  getAlerts,
-  getTriggered,
-  markTriggered,
+  getAllData,
+  saveAllData,
   sendPushNotification,
   isStorageReady,
 } from "@/lib/push";
@@ -24,11 +22,8 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ skipped: "Storage not configured" });
   }
 
-  const [subscription, alerts, triggered] = await Promise.all([
-    getSubscription(),
-    getAlerts(),
-    getTriggered(),
-  ]);
+  const gistData = await getAllData();
+  const { subscription, alerts, triggered } = gistData;
 
   if (!subscription) {
     return NextResponse.json({ skipped: "No push subscription registered" });
@@ -50,6 +45,7 @@ export async function GET(req: NextRequest) {
   }
 
   let fired = 0;
+  const newlyTriggered: string[] = [];
 
   for (const [yahooSymbol, symbolAlerts] of symbolMap.entries()) {
     let quote;
@@ -64,21 +60,21 @@ export async function GET(req: NextRequest) {
     const volRatio = quote.volume / (quote.avgVolume || quote.volume);
 
     for (const alert of symbolAlerts) {
-      let triggered = false;
+      let hit = false;
       let notifBody = "";
 
       if (alert.type === "PRICE_ABOVE" && price >= alert.targetValue) {
-        triggered = true;
+        hit = true;
         notifBody = `${alert.symbol} is ₹${price.toFixed(2)} — above your target of ₹${alert.targetValue}`;
       } else if (alert.type === "PRICE_BELOW" && price <= alert.targetValue) {
-        triggered = true;
+        hit = true;
         notifBody = `${alert.symbol} is ₹${price.toFixed(2)} — below your target of ₹${alert.targetValue}`;
       } else if (alert.type === "VOLUME_SPIKE" && volRatio >= alert.targetValue) {
-        triggered = true;
+        hit = true;
         notifBody = `${alert.symbol} volume is ${volRatio.toFixed(1)}x average — spike detected`;
       }
 
-      if (triggered) {
+      if (hit) {
         const sent = await sendPushNotification(subscription, {
           title: `Bullvora Alert — ${alert.name}`,
           body: notifBody,
@@ -86,11 +82,19 @@ export async function GET(req: NextRequest) {
           alertId: alert.id,
         });
         if (sent) {
-          await markTriggered(alert.id);
+          newlyTriggered.push(alert.id);
           fired++;
         }
       }
     }
+  }
+
+  // Batch-write all triggered IDs in one gist update
+  if (newlyTriggered.length > 0) {
+    await saveAllData({
+      ...gistData,
+      triggered: [...new Set([...triggered, ...newlyTriggered])],
+    });
   }
 
   return NextResponse.json({ checked: active.length, fired, timestamp: Date.now() });
