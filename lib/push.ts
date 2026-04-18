@@ -2,13 +2,17 @@ import webpush from "web-push";
 
 // ─── VAPID config ─────────────────────────────────────────────────────────────
 
-export const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
+export const VAPID_PUBLIC_KEY = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "").trim();
 
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || "";
-const VAPID_EMAIL = process.env.VAPID_EMAIL || "mailto:admin@bullvora.app";
+const VAPID_PRIVATE_KEY = (process.env.VAPID_PRIVATE_KEY || "").trim();
+const VAPID_EMAIL = (process.env.VAPID_EMAIL || "mailto:admin@bullvora.app").trim();
 
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
+// Lazy VAPID init — only configure when actually sending to avoid build-time errors
+let vapidReady = false;
+function ensureVapid() {
+  if (vapidReady || !VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
   webpush.setVapidDetails(VAPID_EMAIL, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY);
+  vapidReady = true;
 }
 
 // ─── Upstash Redis — thin REST client, no SDK needed ─────────────────────────
@@ -99,6 +103,7 @@ export async function sendPushNotification(
     console.error("VAPID keys not configured");
     return false;
   }
+  ensureVapid();
   try {
     await webpush.sendNotification(subscription, JSON.stringify(payload));
     return true;
