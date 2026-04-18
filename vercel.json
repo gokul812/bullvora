@@ -1,13 +1,14 @@
 {
   "functions": {
-    "app/api/scanner/route.ts": {
-      "maxDuration": 60
-    },
-    "app/api/stock/[symbol]/route.ts": {
-      "maxDuration": 30
-    },
-    "app/api/recommendations/route.ts": {
-      "maxDuration": 60
+    "app/api/scanner/route.ts": { "maxDuration": 60 },
+    "app/api/stock/[symbol]/route.ts": { "maxDuration": 30 },
+    "app/api/recommendations/route.ts": { "maxDuration": 60 },
+    "app/api/push/check/route.ts": { "maxDuration": 30 }
+  },
+  "crons": [
+    {
+      "path": "/api/push/check",
+      "schedule": "*/15 * * * *"
     }
-  }
+  ]
 }
